@@ -7,7 +7,7 @@
 require("dotenv").config();
 const { ethers } = require("hardhat");
 
-const POOL = "0x41Be176861DeFC5F76aA34BfC7d3f747B86A467D";
+const POOL = "0xfFDd377F7F1E8cE78e990541A52B7F332819e379";
 const NUSC = "0x14E35846856654693161d68Ea92caC952FF1b6f5";
 
 // change profit amount here (18 decimals)

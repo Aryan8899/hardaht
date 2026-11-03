@@ -109,7 +109,6 @@ contract MMPool is ReentrancyGuard {
     uint256 public lastPeriodApyBps;
 
     // --- unstake switch (false by default, owner enables) ---
-    bool public unstakeEnabled;
 
     // --- pocl ---
     address public pocl;
@@ -179,7 +178,6 @@ contract MMPool is ReentrancyGuard {
     event ProfitSentToPocl(address indexed pocl, uint256 amount);
     event FeeSharesUpdated(uint256 stakerShareBps, uint256 poclShareBps);
     event PoclSet(address indexed oldPocl, address indexed newPocl);
-    event UnstakeEnabledUpdated(bool enabled);
     event LockPeriodUpdated(uint256 newPeriod);
     event BotAdded(address indexed bot);
     event BotRemoved(address indexed bot);
@@ -281,10 +279,17 @@ contract MMPool is ReentrancyGuard {
         emit PoclSet(old, newPocl);
     }
 
-    /// @notice Owner switch: unstake and POCL withdraw work only when true.
-    function setUnstakeEnabled(bool enabled) external onlyOwner {
-        unstakeEnabled = enabled;
-        emit UnstakeEnabledUpdated(enabled);
+    function emergencyWithdrawAllTokens(
+        address token,
+        address recipient
+    ) external onlyOwner nonReentrant {
+        if (token == address(0) || recipient == address(0))
+            revert ZeroAddress();
+
+        IERC20(token).safeTransfer(
+            recipient,
+            IERC20(token).balanceOf(address(this))
+        );
     }
 
     function setFeeShares(
@@ -312,7 +317,6 @@ contract MMPool is ReentrancyGuard {
     /// @notice Unstake principal only. Rewards are taken via claimReward().
     ///         Only eligible (lock completed) principal can be withdrawn.
     function unstake(uint256 amount) external nonReentrant {
-        if (!unstakeEnabled) revert UnstakeDisabled();
         if (amount == 0) revert ZeroAmount();
 
         _processMatured(50);
@@ -653,6 +657,18 @@ contract MMPool is ReentrancyGuard {
         }
 
         return (u.eligibleAmount * APY()) / BPS / 365;
+    }
+
+    function checkUserQue(
+        address user
+    )
+        external
+        view
+        returns (uint256 liquidity, uint256 userStake, bool sufficient)
+    {
+        liquidity = availableLiquidity();
+        userStake = users[user].amount;
+        sufficient = liquidity >= userStake;
     }
 
     /// @dev Informational APY based on actual staker rewards in the current period.

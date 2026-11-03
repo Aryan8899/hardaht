@@ -20,15 +20,20 @@ contract BnplVault is Ownable, ReentrancyGuard, Pausable {
 
     uint256 public constant BPS = 10_000;
     uint256 public constant YEAR = 365 days;
-    uint256 private constant MIN_PROFIT_PERIOD = 1 days;
     uint256 private constant ACC_PRECISION = 1e18;
+    uint256 public lockPeriod = 7 days;
+    uint256 public totalEligibleStake;
 
     uint256 public STAKER_SHARE_BPS = 7_000;
     uint256 public POCL_SHARE_BPS = 3_000;
 
     uint256 public constant MIN_APY_BPS = 300;
     uint256 public constant MAX_APY_BPS = 1_000;
-
+    uint256 public apyPeriod = 30 days;
+    uint256 public periodStart;
+    uint256 public periodRewards;
+    uint256 public lastPeriodApyBps;
+    uint256 public nextPendingStakeIndex;
     uint256 public constant RESERVE_SHARE_BPS = 1_800;
     uint256 public constant TREASURY_SHARE_BPS = 1_200;
 
@@ -55,15 +60,12 @@ contract BnplVault is Ownable, ReentrancyGuard, Pausable {
 
     // ---------------- Profit ----------------
     uint256 public totalProfit;
-    uint256 public lastProfitPeriod;
 
     // ---------------- Rewards ----------------
     uint256 public rewardPerTokenStored;
     uint256 public totalRewardsLiability;
-    uint256 public lastStakerShare;
 
     uint256 public totalStakerRewardsDistributed;
-    uint256 public lastProfitTime;
 
     struct UserInfo {
         uint256 amount;
@@ -74,9 +76,16 @@ contract BnplVault is Ownable, ReentrancyGuard, Pausable {
         uint256 totalRewardEarned;
         uint256 rewardPerTokenPaid;
         uint256 lastUpdateTime;
+        uint256 eligibleAmount;
+    }
+    struct PendingStake {
+        address account;
+        uint256 amount;
+        uint256 eligibleAt;
     }
 
     mapping(address => UserInfo) public users;
+    PendingStake[] public pendingStakes;
 
     // ---------------- Events ----------------
     event Staked(address indexed user, uint256 amount);
@@ -123,6 +132,10 @@ contract BnplVault is Ownable, ReentrancyGuard, Pausable {
     error Unauthorized();
     error InvalidUtilizationLimit();
     error BNPLUtilizationLimitReached();
+    error InvalidPeriod();
+    error MaturedQueuePending();
+    error InsufficientLiquidity();
+    event LockPeriodUpdated(uint256 newPeriod);
 
     modifier onlyBNPL() {
         if (msg.sender != bnpl) revert Unauthorized();
@@ -131,11 +144,6 @@ contract BnplVault is Ownable, ReentrancyGuard, Pausable {
 
     modifier onlyPOCL() {
         if (msg.sender != pocl) revert Unauthorized();
-        _;
-    }
-
-    modifier updateReward(address account) {
-        _updateUserReward(account);
         _;
     }
 
@@ -150,65 +158,56 @@ contract BnplVault is Ownable, ReentrancyGuard, Pausable {
     // STAKING
     // --------------------------------------------------
 
-    function stake(
-        uint256 amount
-    ) external whenNotPaused nonReentrant updateReward(msg.sender) {
+    function stake(uint256 amount) external whenNotPaused nonReentrant {
         if (!stakingEnabled) revert StakingDisabled();
         if (amount == 0) revert ZeroAmount();
 
-        users[msg.sender].amount += amount;
-        totalStaked += amount;
+        _processMatured(50);
+        _updateUserReward(msg.sender);
 
+        uint256 beforeBal = token.balanceOf(address(this));
         token.safeTransferFrom(msg.sender, address(this), amount);
+        uint256 received = token.balanceOf(address(this)) - beforeBal;
 
-        emit Staked(msg.sender, amount);
+        users[msg.sender].amount += received;
+        totalStaked += received;
+
+        uint256 eligibleAt = block.timestamp + lockPeriod;
+        uint256 n = pendingStakes.length;
+        if (n > 0 && pendingStakes[n - 1].eligibleAt > eligibleAt) {
+            eligibleAt = pendingStakes[n - 1].eligibleAt; // queue sorted rakho
+        }
+        pendingStakes.push(PendingStake(msg.sender, received, eligibleAt));
+
+        emit Staked(msg.sender, received);
     }
 
-    function unstake(
-        uint256 amount
-    ) external whenNotPaused nonReentrant updateReward(msg.sender) {
+    function unstake(uint256 amount) external whenNotPaused nonReentrant {
         if (amount == 0) revert ZeroAmount();
 
+        _processMatured(50);
+        _updateUserReward(msg.sender);
+
         UserInfo storage user = users[msg.sender];
+        if (amount > user.eligibleAmount) revert InsufficientStake();
+        if (availableLiquidity() < amount) revert InsufficientLiquidity();
 
-        uint256 principal = user.amount;
-        uint256 pending = user.rewardStored;
-
-        if (principal == 0) revert InsufficientStake();
-        if (amount > principal + pending) revert InsufficientStake();
-
-        uint256 fromReward = amount < pending ? amount : pending;
-        uint256 fromPrincipal = amount - fromReward;
-
-        if (fromReward > 0) {
-            user.rewardStored = pending - fromReward;
-            user.rewardClaimed += fromReward;
-            user.lastClaimTime = block.timestamp;
-            totalRewardClaim += fromReward;
-            totalRewardsLiability -= fromReward;
-        }
-
-        if (fromPrincipal > 0) {
-            user.amount = principal - fromPrincipal;
-            user.amountClaimed += fromPrincipal;
-            totalStaked -= fromPrincipal;
-            totalStakeClaimAmount += fromPrincipal;
-        }
+        user.amount -= amount;
+        user.eligibleAmount -= amount;
+        user.amountClaimed += amount;
+        totalEligibleStake -= amount;
+        totalStaked -= amount;
+        totalStakeClaimAmount += amount;
 
         token.safeTransfer(msg.sender, amount);
-
-        if (fromReward > 0) emit RewardClaimed(msg.sender, fromReward);
-        emit Unstaked(msg.sender, fromPrincipal, fromReward);
+        emit Unstaked(msg.sender, amount, 0);
     }
 
-    function claimReward()
-        external
-        whenNotPaused
-        nonReentrant
-        updateReward(msg.sender)
-    {
-        UserInfo storage user = users[msg.sender];
+    function claimReward() external whenNotPaused nonReentrant {
+        _processMatured(50);
+        _updateUserReward(msg.sender);
 
+        UserInfo storage user = users[msg.sender];
         uint256 reward = user.rewardStored;
         if (reward == 0) revert NoReward();
 
@@ -219,7 +218,6 @@ contract BnplVault is Ownable, ReentrancyGuard, Pausable {
         totalRewardsLiability -= reward;
 
         token.safeTransfer(msg.sender, reward);
-
         emit RewardClaimed(msg.sender, reward);
     }
 
@@ -268,38 +266,37 @@ contract BnplVault is Ownable, ReentrancyGuard, Pausable {
     function receiveFees(
         uint256 borrowFee
     ) external onlyBNPL nonReentrant whenNotPaused {
-        
-
+        if (stakingEnabled) {
+            if (!_processMatured(200)) revert MaturedQueuePending();
+        }
         token.safeTransferFrom(msg.sender, address(this), borrowFee);
 
         totalProfit += borrowFee;
 
         uint256 stakerReward;
         uint256 poclShare;
+        uint256 eligible = totalEligibleStake;
 
-        if (!stakingEnabled || totalStaked == 0) {
+        if (!stakingEnabled || eligible == 0) {
             poclShare = borrowFee;
         } else {
-            uint256 nominalStakerShare = (borrowFee * STAKER_SHARE_BPS) / BPS;
+            uint256 nominal = (borrowFee * STAKER_SHARE_BPS) / BPS;
+            uint256 inc = (nominal * ACC_PRECISION) / eligible;
+            stakerReward = (inc * eligible) / ACC_PRECISION;
 
-            // Convert the nominal share into the accumulator.
-            uint256 rewardPerTokenIncrement = (nominalStakerShare *
-                ACC_PRECISION) / totalStaked;
-
-            stakerReward =
-                (rewardPerTokenIncrement * totalStaked) / ACC_PRECISION;
-
-            rewardPerTokenStored += rewardPerTokenIncrement;
+            rewardPerTokenStored += inc;
             totalRewardsLiability += stakerReward;
+            totalStakerRewardsDistributed += stakerReward;
 
-            // Any rounding dust is sent to POCL.
+            if (stakerReward > 0) {
+                if (periodStart == 0) periodStart = block.timestamp;
+                _rollPeriod();
+                periodRewards += stakerReward;
+            }
             poclShare = borrowFee - stakerReward;
         }
 
-        if (poclShare > 0) {
-            _sendFeeToPOCL(poclShare);
-        }
-
+        if (poclShare > 0) _sendFeeToPOCL(poclShare);
         emit BorrowFeeReceived(borrowFee, stakerReward, poclShare);
     }
 
@@ -385,42 +382,80 @@ contract BnplVault is Ownable, ReentrancyGuard, Pausable {
         feesPaidByBNPL = totalProfit;
     }
 
-    function calculateReward(
-        uint256 _amount,
-        uint256 _time
-    ) public view returns (uint256) {
-        return (_amount * APY() * _time) / (YEAR * BPS);
+    function availableLiquidity() public view returns (uint256) {
+        uint256 bal = token.balanceOf(address(this));
+        uint256 free = bal > totalRewardsLiability
+            ? bal - totalRewardsLiability
+            : 0;
+        return totalStaked < free ? totalStaked : free;
     }
 
     function pendingReward(address account) public view returns (uint256) {
-        UserInfo storage user = users[account];
-
-        uint256 accrued = 0;
-        if (user.amount > 0 && user.lastUpdateTime != 0) {
-            accrued = calculateReward(
-                user.amount,
-                block.timestamp - user.lastUpdateTime
-            );
-        }
-        return user.rewardStored + accrued;
+        UserInfo storage u = users[account];
+        if (u.eligibleAmount == 0) return u.rewardStored;
+        return
+            u.rewardStored +
+            (u.eligibleAmount * (rewardPerTokenStored - u.rewardPerTokenPaid)) /
+                ACC_PRECISION;
     }
 
     function _updateUserReward(address account) internal {
         UserInfo storage user = users[account];
-
-        if (user.amount > 0 && user.lastUpdateTime != 0) {
-            uint256 accrued = calculateReward(
-                user.amount,
-                block.timestamp - user.lastUpdateTime
-            );
+        if (user.eligibleAmount > 0) {
+            uint256 accrued = (user.eligibleAmount *
+                (rewardPerTokenStored - user.rewardPerTokenPaid)) /
+                ACC_PRECISION;
             if (accrued > 0) {
                 user.rewardStored += accrued;
                 user.totalRewardEarned += accrued;
-                totalRewardsLiability += accrued;
+                // totalRewardsLiability YAHAN NAHI badhana
             }
         }
-
+        user.rewardPerTokenPaid = rewardPerTokenStored;
         user.lastUpdateTime = block.timestamp;
+    }
+
+    function processMaturedStakes(uint256 maxEntries) external {
+        if (maxEntries == 0) revert InvalidPeriod();
+        _processMatured(maxEntries);
+    }
+
+    function _processMatured(uint256 maxEntries) internal returns (bool done) {
+        uint256 processed;
+
+        while (
+            nextPendingStakeIndex < pendingStakes.length &&
+            processed < maxEntries
+        ) {
+            PendingStake storage p = pendingStakes[nextPendingStakeIndex];
+            if (p.eligibleAt > block.timestamp) return true;
+
+            _updateUserReward(p.account); // eligibleAmount badalne se PEHLE
+
+            users[p.account].eligibleAmount += p.amount;
+            totalEligibleStake += p.amount;
+
+            nextPendingStakeIndex++;
+            processed++;
+        }
+
+        return
+            nextPendingStakeIndex == pendingStakes.length ||
+            pendingStakes[nextPendingStakeIndex].eligibleAt > block.timestamp;
+    }
+
+    function _rollPeriod() internal {
+        if (periodStart == 0) return;
+        uint256 elapsed = block.timestamp - periodStart;
+        if (elapsed >= apyPeriod) {
+            if (totalEligibleStake > 0) {
+                lastPeriodApyBps =
+                    (periodRewards * BPS * YEAR) /
+                    (totalEligibleStake * elapsed);
+            }
+            periodRewards = 0;
+            periodStart = block.timestamp;
+        }
     }
 
     function _sendFeeToPOCL(uint256 amount) internal {
@@ -430,28 +465,14 @@ contract BnplVault is Ownable, ReentrancyGuard, Pausable {
         emit BorrowFeeSentToPOCL(pocl, amount);
     }
 
-    function earned(address account) public view returns (uint256) {
-        UserInfo storage user = users[account];
-
-        uint256 accrued = (user.amount *
-            (rewardPerTokenStored - user.rewardPerTokenPaid)) / ACC_PRECISION;
-
-        return user.rewardStored + accrued;
-    }
-
     function getUserInfo(
         address account
     ) external view returns (UserInfo memory info) {
         info = users[account];
 
-        if (info.amount > 0 && info.lastUpdateTime != 0) {
-            uint256 accrued = calculateReward(
-                info.amount,
-                block.timestamp - info.lastUpdateTime
-            );
-            info.rewardStored += accrued;
-            info.totalRewardEarned += accrued;
-        }
+        uint256 pending = pendingReward(account);
+        info.totalRewardEarned += pending - info.rewardStored;
+        info.rewardStored = pending;
     }
 
     function getUserRewardStats(
@@ -474,13 +495,17 @@ contract BnplVault is Ownable, ReentrancyGuard, Pausable {
         pending = pendingReward(account);
         totalEarned = user.totalRewardEarned + (pending - user.rewardStored);
         totalClaimed = user.rewardClaimed;
-        withdrawable = staked + pending;
-        yearlyEstimate = (staked * APY()) / BPS;
+        withdrawable = user.eligibleAmount;
+        yearlyEstimate = (user.eligibleAmount * APY()) / BPS;
     }
     function APY() public view returns (uint256) {
-        if (totalStaked == 0) return MIN_APY_BPS;
+        if (periodStart == 0 || totalEligibleStake == 0) return MIN_APY_BPS;
 
-        uint256 apy = (totalStakerRewardsDistributed * BPS) / totalStaked;
+        uint256 elapsed = block.timestamp - periodStart;
+        if (elapsed == 0) return MIN_APY_BPS;
+
+        uint256 apy = (periodRewards * BPS * YEAR) /
+            (totalEligibleStake * elapsed);
 
         if (apy < MIN_APY_BPS) return MIN_APY_BPS;
         if (apy > MAX_APY_BPS) return MAX_APY_BPS;
@@ -514,9 +539,15 @@ contract BnplVault is Ownable, ReentrancyGuard, Pausable {
         POCL_SHARE_BPS = poclShareBps;
     }
 
+    function setLockPeriod(uint256 newPeriod) external onlyOwner {
+        if (newPeriod == 0) revert InvalidPeriod();
+        lockPeriod = newPeriod;
+        emit LockPeriodUpdated(newPeriod);
+    }
+
     function setStakingEnabled(bool enabled) external onlyOwner {
         stakingEnabled = enabled;
-        if (enabled && lastProfitTime == 0) lastProfitTime = block.timestamp;
+
         emit StakingEnabledUpdated(enabled);
     }
 
@@ -530,6 +561,11 @@ contract BnplVault is Ownable, ReentrancyGuard, Pausable {
         if (newBNPL == address(0)) revert ZeroAddress();
         bnpl = newBNPL;
         emit BNPLUpdated(newBNPL);
+    }
+
+    function setApyPeriod(uint256 newPeriod) external onlyOwner {
+        if (newPeriod < 1 days) revert InvalidPeriod();
+        apyPeriod = newPeriod;
     }
 
     function pause() external onlyOwner {
