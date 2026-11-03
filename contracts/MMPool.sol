@@ -24,6 +24,11 @@ contract MMPool is ReentrancyGuard {
     uint256 public constant MIN_APY_BPS = 300;
     uint256 public constant MAX_APY_BPS = 1_000;
 
+    // --- per-stake lock (dynamic, owner can change; applies to new stakes only) ---
+    uint256 public lockPeriod = 7 days;
+
+    uint256 public totalEligibleStake;
+
     /*//////////////////////////////////////////////////////////////
                                  ERRORS
     //////////////////////////////////////////////////////////////*/
@@ -48,6 +53,7 @@ contract MMPool is ReentrancyGuard {
     error InvalidPeriod();
     error PoclHasStake();
     error UnstakeDisabled();
+    error MaturedQueuePending();
 
     /*//////////////////////////////////////////////////////////////
                                IMMUTABLES
@@ -62,7 +68,7 @@ contract MMPool is ReentrancyGuard {
     //////////////////////////////////////////////////////////////*/
     // --- stake accounting ---
     struct UserInfo {
-        uint256 amount;
+        uint256 amount; // total stake (eligible + hold)
         uint256 rewardStored;
         uint256 rewardClaimed;
         uint256 amountClaimed;
@@ -70,6 +76,14 @@ contract MMPool is ReentrancyGuard {
         uint256 totalRewardEarned;
         uint256 rewardPerTokenPaid;
         uint256 lastUpdateTime;
+        uint256 eligibleAmount; // lock complete, earns reward
+    }
+
+    // one entry per stake() call, with its own unlock time
+    struct PendingStake {
+        address account;
+        uint256 amount;
+        uint256 eligibleAt;
     }
 
     mapping(address => UserInfo) public users;
@@ -110,6 +124,9 @@ contract MMPool is ReentrancyGuard {
     mapping(address => bool) public isSigner;
     mapping(address => uint256) private botIndex;
     mapping(address => uint256) public botProfit;
+
+    PendingStake[] public pendingStakes;
+    uint256 public nextPendingStakeIndex;
 
     enum Action {
         ADD_BOT,
@@ -152,16 +169,18 @@ contract MMPool is ReentrancyGuard {
         uint256 botTotal,
         uint256 allBotsTotal
     );
-    event ProfitSplit(
+    event ProfitDistributed(
         address indexed bot,
         uint256 totalProfit,
-        uint256 stakerShare,
-        uint256 poclShare
+        uint256 stakerReward,
+        uint256 poclShare,
+        uint256 eligibleStake
     );
     event ProfitSentToPocl(address indexed pocl, uint256 amount);
     event FeeSharesUpdated(uint256 stakerShareBps, uint256 poclShareBps);
     event PoclSet(address indexed oldPocl, address indexed newPocl);
     event UnstakeEnabledUpdated(bool enabled);
+    event LockPeriodUpdated(uint256 newPeriod);
     event BotAdded(address indexed bot);
     event BotRemoved(address indexed bot);
 
@@ -214,16 +233,37 @@ contract MMPool is ReentrancyGuard {
     //////////////////////////////////////////////////////////////*/
 
     function stake(uint256 amount) external nonReentrant {
+        _processMatured(50);
+
+        // Settle previous rewards before modifying stake
         _updateReward(msg.sender);
 
         uint256 received = _pullTokens(msg.sender, amount);
 
-        users[msg.sender].amount += received;
+        UserInfo storage u = users[msg.sender];
+        u.amount += received;
 
         if (msg.sender == pocl) {
             poclStake += received;
         } else {
             totalUserStake += received;
+
+            // This deposit becomes eligible after its own lockPeriod
+            uint256 eligibleAt = block.timestamp + lockPeriod;
+
+            // keep queue sorted even if lockPeriod was reduced
+            uint256 n = pendingStakes.length;
+            if (n > 0 && pendingStakes[n - 1].eligibleAt > eligibleAt) {
+                eligibleAt = pendingStakes[n - 1].eligibleAt;
+            }
+
+            pendingStakes.push(
+                PendingStake({
+                    account: msg.sender,
+                    amount: received,
+                    eligibleAt: eligibleAt
+                })
+            );
         }
 
         emit Staked(msg.sender, received, msg.sender == pocl);
@@ -262,44 +302,52 @@ contract MMPool is ReentrancyGuard {
         apyPeriod = newPeriod;
     }
 
-    /// @notice Unstake principal + reward. Reward is taken first, then principal.
-    /// @dev Works only when unstakeEnabled is true. Paid instantly, no queue.
+    /// @notice Change lock time (default 7 days). Only affects new stakes.
+    function setLockPeriod(uint256 newPeriod) external onlyOwner {
+        if (newPeriod == 0) revert InvalidPeriod();
+        lockPeriod = newPeriod;
+        emit LockPeriodUpdated(newPeriod);
+    }
+
+    /// @notice Unstake principal only. Rewards are taken via claimReward().
+    ///         Only eligible (lock completed) principal can be withdrawn.
     function unstake(uint256 amount) external nonReentrant {
         if (!unstakeEnabled) revert UnstakeDisabled();
         if (amount == 0) revert ZeroAmount();
 
+        _processMatured(50);
+
+        // settle reward before eligibleAmount changes (reward stays in rewardStored)
         _updateReward(msg.sender);
+
         UserInfo storage u = users[msg.sender];
 
-        uint256 reward = u.rewardStored;
-        if (amount > u.amount + reward) revert InsufficientStake();
+        if (amount > u.amount) revert InsufficientStake();
 
-        // pehle reward, phir principal
-        uint256 rewardPart = amount <= reward ? amount : reward;
-        uint256 principalPart = amount - rewardPart;
-
-        // ---- effects ----
-        if (rewardPart > 0) {
-            u.rewardStored -= rewardPart;
-            u.rewardClaimed += rewardPart;
-            u.lastClaimTime = block.timestamp;
-            totalRewardClaim += rewardPart;
-            totalRewardsLiability -= rewardPart;
+        // Check combined user + POCL principal liquidity
+        if (availableLiquidity() < amount) {
+            revert InsufficientLiquidity();
         }
 
-        if (principalPart > 0) {
-            u.amount -= principalPart;
-            u.amountClaimed += principalPart;
-            if (msg.sender == pocl) poclStake -= principalPart;
-            else totalUserStake -= principalPart;
+        if (msg.sender == pocl) {
+            u.amount -= amount;
+            u.amountClaimed += amount;
+            poclStake -= amount;
+        } else {
+            // only the 7-day-old (eligible) part can leave, hold part stays locked
+            if (amount > u.eligibleAmount) revert InsufficientStake();
+
+            u.amount -= amount;
+            u.eligibleAmount -= amount;
+            u.amountClaimed += amount;
+
+            totalEligibleStake -= amount;
+            totalUserStake -= amount;
         }
 
-        // ---- interactions ----
         NUSC.safeTransfer(msg.sender, amount);
 
-        if (rewardPart > 0) emit RewardClaimed(msg.sender, rewardPart);
-        if (principalPart > 0)
-            emit Unstaked(msg.sender, principalPart, msg.sender == pocl);
+        emit Unstaked(msg.sender, amount, msg.sender == pocl);
     }
 
     function notifyNUSCStaked(uint256 amount) external onlyPocl nonReentrant {
@@ -316,14 +364,7 @@ contract MMPool is ReentrancyGuard {
         uint256 amount,
         address recipient
     ) external onlyPocl nonReentrant {
-        if (!unstakeEnabled) revert UnstakeDisabled();
-        if (amount == 0) revert ZeroAmount();
-        if (recipient == address(0)) revert ZeroAddress();
-
         UserInfo storage u = users[msg.sender];
-        if (u.amount < amount || poclStake < amount) revert InsufficientStake();
-
-        if (availableLiquidity() < amount) revert InsufficientLiquidity();
 
         u.amount -= amount;
         poclStake -= amount;
@@ -334,16 +375,22 @@ contract MMPool is ReentrancyGuard {
         emit Unstaked(msg.sender, amount, true);
     }
 
+    /// @notice Claim reward. Reward only accrues on eligible (7-day-old) stake,
+    ///         so before the lock completes the reward is 0.
     function claimReward() external nonReentrant {
+        _processMatured(50);
         _updateReward(msg.sender);
 
         UserInfo storage u = users[msg.sender];
+
         uint256 reward = u.rewardStored;
+
         if (reward == 0) revert NothingToClaim();
 
         u.rewardStored = 0;
         u.rewardClaimed += reward;
         u.lastClaimTime = block.timestamp;
+
         totalRewardClaim += reward;
         totalRewardsLiability -= reward;
 
@@ -352,38 +399,90 @@ contract MMPool is ReentrancyGuard {
         emit RewardClaimed(msg.sender, reward);
     }
 
+    /// @notice Anyone can call: moves stakes whose lock has finished to eligible.
+    function processMaturedStakes(uint256 maxEntries) external {
+        if (maxEntries == 0) revert InvalidPeriod();
+        _processMatured(maxEntries);
+    }
+
+    /// @dev Walks the queue (sorted by eligibleAt). Each matured lot becomes
+    ///      eligible. _updateReward runs BEFORE eligibleAmount changes so the
+    ///      user does not get reward for profit that came before maturity.
+    /// @return done true if no matured lot is left in the queue.
+    function _processMatured(uint256 maxEntries) internal returns (bool done) {
+        uint256 processed;
+
+        while (
+            nextPendingStakeIndex < pendingStakes.length &&
+            processed < maxEntries
+        ) {
+            PendingStake storage p = pendingStakes[nextPendingStakeIndex];
+
+            if (p.eligibleAt > block.timestamp) return true;
+
+            _updateReward(p.account);
+
+            users[p.account].eligibleAmount += p.amount;
+            totalEligibleStake += p.amount;
+
+            nextPendingStakeIndex++;
+            processed++;
+        }
+
+        return
+            nextPendingStakeIndex == pendingStakes.length ||
+            pendingStakes[nextPendingStakeIndex].eligibleAt > block.timestamp;
+    }
+
     /*//////////////////////////////////////////////////////////////
                               BOT WALLET
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice MM bot deposits 100% profit. Split: STAKER_SHARE to stakers
+    /// @notice MM bot deposits 100% profit. Split instantly:
+    ///         STAKER_SHARE to eligible stakers, rest to POCL.
     function depositProfit(uint256 amount) external onlyBot nonReentrant {
+        // all matured stakes must be eligible before profit is split
+        if (!_processMatured(200)) revert MaturedQueuePending();
+
         uint256 received = _pullTokens(msg.sender, amount);
 
         botProfit[msg.sender] += received;
         totalProfitFromBot += received;
 
-        uint256 stakerReward = (received * STAKER_SHARE_BPS) / BPS;
-        uint256 poclShare = received - stakerReward;
+        uint256 eligibleStake = totalEligibleStake;
+        uint256 stakerReward;
+        uint256 poclShare;
 
-        if (totalUserStake > 0) {
-            uint256 increment = (stakerReward * ACC_PRECISION) / totalUserStake;
+        if (eligibleStake > 0) {
+            uint256 stakerBudget = (received * STAKER_SHARE_BPS) / BPS;
 
-            stakerReward = (increment * totalUserStake) / ACC_PRECISION;
+            uint256 increment = (stakerBudget * ACC_PRECISION) / eligibleStake;
+
+            // Actual distributable amount after rounding
+            stakerReward = (increment * eligibleStake) / ACC_PRECISION;
 
             rewardPerTokenStored += increment;
+
             totalRewardsLiability += stakerReward;
             totalStakerRewardsDistributed += stakerReward;
 
-            if (periodStart == 0) periodStart = block.timestamp;
-            _rollPeriod();
-            periodRewards += stakerReward;
+            if (stakerReward > 0) {
+                if (periodStart == 0) {
+                    periodStart = block.timestamp;
+                }
+                _rollPeriod();
+                periodRewards += stakerReward;
+            }
 
-            // Rounding dust goes to POCL
             poclShare = received - stakerReward;
-        } 
+        } else {
+            // No eligible stakers: send the entire profit to POCL.
+            poclShare = received;
+        }
 
-        if (poclShare > 0) _sendProfitToPocl(poclShare);
+        if (poclShare > 0) {
+            _sendProfitToPocl(poclShare);
+        }
 
         emit ProfitDeposited(
             msg.sender,
@@ -391,8 +490,13 @@ contract MMPool is ReentrancyGuard {
             botProfit[msg.sender],
             totalProfitFromBot
         );
-
-        emit ProfitSplit(msg.sender, received, stakerReward, poclShare);
+        emit ProfitDistributed(
+            msg.sender,
+            received,
+            stakerReward,
+            poclShare,
+            eligibleStake
+        );
     }
 
     function _sendProfitToPocl(uint256 amount) private {
@@ -514,9 +618,8 @@ contract MMPool is ReentrancyGuard {
     function _updateReward(address account) internal {
         UserInfo storage u = users[account];
 
-        // POCL is not part of the staker accumulator (it gets its 30% directly)
-        if (account != pocl && u.amount > 0) {
-            uint256 accrued = (u.amount *
+        if (account != pocl && u.eligibleAmount > 0) {
+            uint256 accrued = (u.eligibleAmount *
                 (rewardPerTokenStored - u.rewardPerTokenPaid)) / ACC_PRECISION;
 
             if (accrued > 0) {
@@ -531,9 +634,12 @@ contract MMPool is ReentrancyGuard {
 
     function pendingReward(address account) public view returns (uint256) {
         UserInfo storage u = users[account];
-        if (account == pocl || u.amount == 0) return u.rewardStored;
 
-        uint256 accrued = (u.amount *
+        if (account == pocl || u.eligibleAmount == 0) {
+            return u.rewardStored;
+        }
+
+        uint256 accrued = (u.eligibleAmount *
             (rewardPerTokenStored - u.rewardPerTokenPaid)) / ACC_PRECISION;
 
         return u.rewardStored + accrued;
@@ -541,18 +647,23 @@ contract MMPool is ReentrancyGuard {
 
     function getDailyReward(address account) external view returns (uint256) {
         UserInfo storage u = users[account];
-        if (account == pocl || u.amount == 0) return 0;
-        return (u.amount * APY()) / BPS / 365;
+
+        if (account == pocl || u.eligibleAmount == 0) {
+            return 0;
+        }
+
+        return (u.eligibleAmount * APY()) / BPS / 365;
     }
 
     /// @dev Informational APY based on actual staker rewards in the current period.
     function APY() public view returns (uint256) {
-        if (periodStart == 0 || totalUserStake == 0) return MIN_APY_BPS;
+        if (periodStart == 0 || totalEligibleStake == 0) return MIN_APY_BPS;
 
         uint256 elapsed = block.timestamp - periodStart;
         if (elapsed == 0) return MIN_APY_BPS;
 
-        uint256 apy = (periodRewards * BPS * YEAR) / (totalUserStake * elapsed);
+        uint256 apy = (periodRewards * BPS * YEAR) /
+            (totalEligibleStake * elapsed);
 
         if (apy < MIN_APY_BPS) return MIN_APY_BPS;
         if (apy > MAX_APY_BPS) return MAX_APY_BPS;
@@ -565,9 +676,10 @@ contract MMPool is ReentrancyGuard {
         uint256 elapsed = block.timestamp - periodStart;
 
         if (elapsed >= apyPeriod) {
-            if (totalUserStake > 0) {
+            if (totalEligibleStake > 0) {
                 lastPeriodApyBps =
-                    (periodRewards * BPS * YEAR) / (totalUserStake * elapsed);
+                    (periodRewards * BPS * YEAR) /
+                    (totalEligibleStake * elapsed);
             }
             periodRewards = 0;
             periodStart = block.timestamp;
@@ -586,6 +698,31 @@ contract MMPool is ReentrancyGuard {
         return signers;
     }
 
+    /// @notice stake still inside the lock period (as of last processing)
+    function holdAmount(address account) public view returns (uint256) {
+        return users[account].amount - users[account].eligibleAmount;
+    }
+
+    /// @notice total / eligible / hold / pending reward in one call
+    function getUserStakeInfo(
+        address account
+    )
+        external
+        view
+        returns (
+            uint256 totalStakeAmount,
+            uint256 eligibleAmount,
+            uint256 hold,
+            uint256 reward
+        )
+    {
+        UserInfo storage u = users[account];
+        totalStakeAmount = u.amount;
+        eligibleAmount = u.eligibleAmount;
+        hold = u.amount - u.eligibleAmount;
+        reward = pendingReward(account);
+    }
+
     function _pullTokens(
         address from,
         uint256 amount
@@ -598,8 +735,17 @@ contract MMPool is ReentrancyGuard {
 
     /// @notice Liquidity = POCL stake + user stake.
     ///         MM profit reserved for stakers (totalRewardsLiability) is not included.
+    ///         Capped by the real token balance (minus staker rewards owed), so
+    ///         unstake only works if the funds are actually in the contract.
     function availableLiquidity() public view returns (uint256) {
-        return totalUserStake + poclStake;
+        uint256 accounted = totalUserStake + poclStake;
+
+        uint256 bal = NUSC.balanceOf(address(this));
+        uint256 free = bal > totalRewardsLiability
+            ? bal - totalRewardsLiability
+            : 0;
+
+        return accounted < free ? accounted : free;
     }
 
     function getPoclAllocation()

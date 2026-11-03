@@ -7,11 +7,11 @@
 require("dotenv").config();
 const { ethers } = require("hardhat");
 
-const POOL = "0x6786D33b18806A80d2156CA08d7d783f33C3fd9d";
+const POOL = "0x41Be176861DeFC5F76aA34BfC7d3f747B86A467D";
 const NUSC = "0x14E35846856654693161d68Ea92caC952FF1b6f5";
 
 // change profit amount here (18 decimals)
-const PROFIT = ethers.parseUnits("50", 18);
+const PROFIT = ethers.parseUnits("100", 18);
 
 const POOL_ABI = [
   "function isBot(address) view returns (bool)",
