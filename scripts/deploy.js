@@ -1,75 +1,70 @@
-const { ethers, run } = require("hardhat");
-const fs = require("fs");
-require("dotenv").config();
+const { ethers, run, network } = require("hardhat");
+
 
 async function main() {
-    const TokenWhitelist    = "0xdd5A27d782D1001974FF43F1376e996ed103181C";
-    const BNPL_Subscription = "0x72eA911ef311c9001eB6656AcEEfF05f69cAAF98";
-    const stakeContract     = "0x21e1515d7B750fFd37B084B32dc3933593C0FbE9";
-    const op                = "0x0EB81A8Da2f15A84A954c7b7525046AC9EB75cBc";
-    const signerrole        = "0xBa2dF2424b6AC806C16Ebba254fc93b468102274";
+    const NUSC_ADDRESS = "0x14E35846856654693161d68Ea92caC952FF1b6f5";
 
-    console.log("=".repeat(50));
-    console.log("Deploying Vault...");
-    console.log("=".repeat(50));
 
-    const Vault = await ethers.getContractFactory("Bnpl");
-    const vault = await Vault.deploy(
-        BNPL_Subscription,
-        TokenWhitelist,
-        stakeContract,
-        op,
-        signerrole
+    const POCL_ADDRESS = "0x898Bba4b34e4a3CbdC6F73De452c275993852dC8";
+
+
+    const SIGNERS = [
+        "0xBa2dF2424b6AC806C16Ebba254fc93b468102274",
+        "0x0734B80bd4aecdb2685F5B9ADB998641C65BbAAA",
+        "0xBde8fa22D38FA04a6De3dE0acF863709F78193b4"
+    ];
+
+
+    const MMPool = await ethers.getContractFactory("MMPool");
+
+
+    const mmPool = await MMPool.deploy(
+        NUSC_ADDRESS,
+        POCL_ADDRESS,
+        SIGNERS
     );
 
-    await vault.waitForDeployment();
 
-    const contractAddress = await vault.getAddress();
+    await mmPool.waitForDeployment();
 
-    console.log("✅ Vault deployed at:", contractAddress);
 
-    let deployment = {};
-    if (fs.existsSync("deployment.json")) {
-        deployment = JSON.parse(fs.readFileSync("deployment.json"));
-    }
+    const address = await mmPool.getAddress();
+    const tx = mmPool.deploymentTransaction();
 
-    deployment.vault = contractAddress;
 
-    fs.writeFileSync(
-        "deployment.json",
-        JSON.stringify(deployment, null, 2)
-    );
+    await tx.wait();
 
-    console.log("✅ Saved to deployment.json");
 
-    // Wait for explorer to index contract
-    console.log("\nWaiting 30 seconds before verification...");
-    await new Promise((resolve) => setTimeout(resolve, 30000));
+    console.log("\nMMPool deployed successfully!");
+    console.log("Network:", network.name);
+    console.log("Contract:", address);
+    console.log("Transaction:", tx.hash);
+
+
+    console.log("\nWaiting for explorer indexing...");
+    await new Promise(resolve => setTimeout(resolve, 10000));
+
 
     try {
         await run("verify:verify", {
-            address: contractAddress,
+            address: address,
             constructorArguments: [
-                BNPL_Subscription,
-                TokenWhitelist,
-                stakeContract,
-                op,
-                signerrole,
-            ],
+                NUSC_ADDRESS,
+                POCL_ADDRESS,
+                SIGNERS
+            ]
         });
 
-        console.log("✅ Contract verified successfully!");
+
+        console.log("MMPool verified successfully!");
     } catch (error) {
-        if (error.message.toLowerCase().includes("already verified")) {
-            console.log("✅ Contract is already verified.");
+        if (/already verified|already been verified/i.test(error.message)) {
+            console.log("MMPool is already verified.");
         } else {
-            console.error("❌ Verification failed:");
-            console.error(error);
+            console.log("Verification failed:", error.message);
         }
     }
 }
 
-main().catch((error) => {
-    console.error(error);
-    process.exitCode = 1;
-});
+
+main().catch(console.error);

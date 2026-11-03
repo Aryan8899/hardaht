@@ -131,6 +131,78 @@ abstract contract Ownable is Context {
     }
 }
 
+// File: @openzeppelin/contracts/access/Ownable2Step.sol
+
+// OpenZeppelin Contracts (last updated v5.1.0) (access/Ownable2Step.sol)
+
+pragma solidity ^0.8.20;
+
+/**
+ * @dev Contract module which provides access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * This extension of the {Ownable} contract includes a two-step mechanism to transfer
+ * ownership, where the new owner must call {acceptOwnership} in order to replace the
+ * old one. This can help prevent common mistakes, such as transfers of ownership to
+ * incorrect accounts, or to contracts that are unable to interact with the
+ * permission system.
+ *
+ * The initial owner is specified at deployment time in the constructor for `Ownable`. This
+ * can later be changed with {transferOwnership} and {acceptOwnership}.
+ *
+ * This module is used through inheritance. It will make available all functions
+ * from parent (Ownable).
+ */
+abstract contract Ownable2Step is Ownable {
+    address private _pendingOwner;
+
+    event OwnershipTransferStarted(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    /**
+     * @dev Returns the address of the pending owner.
+     */
+    function pendingOwner() public view virtual returns (address) {
+        return _pendingOwner;
+    }
+
+    /**
+     * @dev Starts the ownership transfer of the contract to a new account. Replaces the pending transfer if there is one.
+     * Can only be called by the current owner.
+     *
+     * Setting `newOwner` to the zero address is allowed; this can be used to cancel an initiated ownership transfer.
+     */
+    function transferOwnership(
+        address newOwner
+    ) public virtual override onlyOwner {
+        _pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner(), newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`) and deletes any pending owner.
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual override {
+        delete _pendingOwner;
+        super._transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev The new owner accepts the ownership transfer.
+     */
+    function acceptOwnership() public virtual {
+        address sender = _msgSender();
+        if (pendingOwner() != sender) {
+            revert OwnableUnauthorizedAccount(sender);
+        }
+        _transferOwnership(sender);
+    }
+}
+
 // File: @openzeppelin/contracts/utils/StorageSlot.sol
 
 // OpenZeppelin Contracts (last updated v5.1.0) (utils/StorageSlot.sol)
@@ -415,118 +487,6 @@ abstract contract ReentrancyGuard {
         returns (bytes32)
     {
         return REENTRANCY_GUARD_STORAGE;
-    }
-}
-
-// File: @openzeppelin/contracts/utils/Pausable.sol
-
-// OpenZeppelin Contracts (last updated v5.3.0) (utils/Pausable.sol)
-
-pragma solidity ^0.8.20;
-
-/**
- * @dev Contract module which allows children to implement an emergency stop
- * mechanism that can be triggered by an authorized account.
- *
- * This module is used through inheritance. It will make available the
- * modifiers `whenNotPaused` and `whenPaused`, which can be applied to
- * the functions of your contract. Note that they will not be pausable by
- * simply including this module, only once the modifiers are put in place.
- */
-abstract contract Pausable is Context {
-    bool private _paused;
-
-    /**
-     * @dev Emitted when the pause is triggered by `account`.
-     */
-    event Paused(address account);
-
-    /**
-     * @dev Emitted when the pause is lifted by `account`.
-     */
-    event Unpaused(address account);
-
-    /**
-     * @dev The operation failed because the contract is paused.
-     */
-    error EnforcedPause();
-
-    /**
-     * @dev The operation failed because the contract is not paused.
-     */
-    error ExpectedPause();
-
-    /**
-     * @dev Modifier to make a function callable only when the contract is not paused.
-     *
-     * Requirements:
-     *
-     * - The contract must not be paused.
-     */
-    modifier whenNotPaused() {
-        _requireNotPaused();
-        _;
-    }
-
-    /**
-     * @dev Modifier to make a function callable only when the contract is paused.
-     *
-     * Requirements:
-     *
-     * - The contract must be paused.
-     */
-    modifier whenPaused() {
-        _requirePaused();
-        _;
-    }
-
-    /**
-     * @dev Returns true if the contract is paused, and false otherwise.
-     */
-    function paused() public view virtual returns (bool) {
-        return _paused;
-    }
-
-    /**
-     * @dev Throws if the contract is paused.
-     */
-    function _requireNotPaused() internal view virtual {
-        if (paused()) {
-            revert EnforcedPause();
-        }
-    }
-
-    /**
-     * @dev Throws if the contract is not paused.
-     */
-    function _requirePaused() internal view virtual {
-        if (!paused()) {
-            revert ExpectedPause();
-        }
-    }
-
-    /**
-     * @dev Triggers stopped state.
-     *
-     * Requirements:
-     *
-     * - The contract must not be paused.
-     */
-    function _pause() internal virtual whenNotPaused {
-        _paused = true;
-        emit Paused(_msgSender());
-    }
-
-    /**
-     * @dev Returns to normal state.
-     *
-     * Requirements:
-     *
-     * - The contract must be paused.
-     */
-    function _unpause() internal virtual whenPaused {
-        _paused = false;
-        emit Unpaused(_msgSender());
     }
 }
 
@@ -1110,580 +1070,749 @@ library SafeERC20 {
     }
 }
 
-// File: contracts/bnplpool.sol
+// File: NewFlow/POCL.sol
 
-//// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.30;
 
-pragma solidity 0.8.30;
-
-interface IFactory {
-    function isVault(address vault) external view returns (bool);
-}
-// ─── ADD THIS ABOVE contract Vault ───────────────────────
-abstract contract ERC2771Context is Context {
-    address private immutable _trustedForwarder;
-
-    constructor(address trustedForwarder_) {
-        _trustedForwarder = trustedForwarder_;
-    }
-
-    function isTrustedForwarder(address forwarder) public view returns (bool) {
-        return forwarder == _trustedForwarder;
-    }
-
-    function trustedForwarder() public view returns (address) {
-        return _trustedForwarder;
-    }
-
-    function _msgSender()
-        internal
+interface IEOAStats {
+    function getEOAStats()
+        external
         view
-        virtual
-        override
-        returns (address sender)
-    {
-        if (isTrustedForwarder(msg.sender) && msg.data.length >= 20) {
-            assembly {
-                sender := shr(96, calldataload(sub(calldatasize(), 20)))
-            }
-        } else {
-            return super._msgSender();
-        }
-    }
-
-    function _msgData()
-        internal
-        view
-        virtual
-        override
-        returns (bytes calldata)
-    {
-        if (isTrustedForwarder(msg.sender) && msg.data.length >= 20) {
-            return msg.data[:msg.data.length - 20];
-        } else {
-            return super._msgData();
-        }
-    }
-
-    function _contextSuffixLength()
-        internal
-        view
-        virtual
-        override
-        returns (uint256)
-    {
-        return 20;
-    }
-}
-// ─────────────────────────────────────────────────────────
-
-// Vault.sol ke top mein, IERC20 ke baad add karo
-interface IERC20Permit {
-    function permit(
-        address owner,
-        address spender,
-        uint256 value,
-        uint256 deadline,
-        uint8 v,
-        bytes32 r,
-        bytes32 s
-    ) external;
-
-    function nonces(address owner) external view returns (uint256);
-    function DOMAIN_SEPARATOR() external view returns (bytes32);
+        returns (uint256 holders, uint256 totalHeld);
 }
 
-contract Vault is Ownable, ReentrancyGuard, Pausable, ERC2771Context {
+interface IMMpool {
+    function totalUserStake() external view returns (uint256);
+    function withdrawNUSCForPOCL(uint256 amount, address recipient) external;
+    function notifyNUSCStaked(uint256 amount) external;
+}
+
+interface IPOCLDestination {
+    function withdrawNUSCForPOCL(uint256 amount) external;
+    function notifyNUSCStaked(uint256 amount) external;
+}
+
+interface ITokenPriceOracle {
+    /// @dev Returns price and Unix timestamp. Price convention is configured in POCL.
+    function getTokenPrice(
+        address token
+    ) external view returns (uint256 price, uint256 updatedAt);
+}
+
+/// @title POCL
+/// @notice Protocol-Owned Credit Line funding coordinator.
+/// @dev Requires compatible, independently secured MMpool and Vault contracts.
+///
+/// Delta formula:
+/// delta = total EOA-held NUSC
+///       + Reserve-held NUSC
+///       + 50% of total MMpool user stake
+///
+/// BorrowFee policy:
+/// - Collected NUSC fees are reserved from funding allocations.
+/// - When processed, the entire NUSC fee is transferred to BURN_ADDRESS.
+/// - The equivalent native NOWA is also transferred to BURN_ADDRESS.
+/// - Native NOWA must be funded separately; this contract does not swap tokens.
+///
+/// Oracle convention for the stated deployment:
+/// - price = 0.0004 NUSC per NOWA, scaled by 1e18.
+/// - oracleReturnsNowaPerNusc = false.
+/// - oraclePriceScale = 1e18.
+contract POCL is Ownable2Step, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    address public controller;
-    // address public mmVaultFactory;
+    uint256 public constant BPS_DENOMINATOR = 10_000;
+    uint256 public constant INITIAL_MMPOOL_BPS = 1_000;
+    uint256 public constant INITIAL_VAULT_BPS = 9_000;
+    uint256 public constant PROPOSAL_LIFETIME = 7 days;
+    uint256 public constant MIN_SIGNERS = 3;
+    uint256 public constant MAX_SIGNERS = 50;
 
-    struct UserInfo {
-        uint256 amount; // Total tokens staked
-        uint256 rewardStored; // Stored reward (from previous deposit time)
-        uint256 rewardClaimed; // Total claim reward Amount
-        uint256 lastUpdateTime; // Last time reward was calculated
-        uint256 lastClaimTime; // Last time user claimed their stake amount
-        uint256 amountclaimed;
-        uint256 totalRewardEarned;
+    address public constant NOWA_NATIVE =
+        0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+    address public constant BURN_ADDRESS =
+        0x000000000000000000000000000000000000dEaD;
+
+    error ZeroAddress();
+    error InvalidConfiguration();
+    error InvalidSignerSet();
+    error NotSigner();
+    error InvalidProposal();
+    error ProposalExpired();
+    error ProposalAlreadyExecuted();
+    error AlreadyApproved();
+    error ThresholdNotMet();
+    error InsufficientPOCLBalance(uint256 required, uint256 available);
+    error FeeReserveInvariant(uint256 tokenBalance, uint256 reservedFees);
+    error InvalidOraclePrice();
+    error StaleOraclePrice();
+    error InvalidOracleTimestamp();
+    error InsufficientNativeNOWA(uint256 required, uint256 available);
+    error NativeTransferFailed();
+    error OnlyVault();
+    error NoBorrowFees();
+    error InvalidPriceScale();
+    error UnsupportedTokenBehavior();
+    error ArithmeticOverflow();
+    error DeltaChangeTooLarge();
+    error OnlyMMPool();
+
+    IERC20 public immutable nuscToken;
+    IEOAStats public statsContract;
+    address public reserveContract;
+    IMMpool public mmPool;
+    address public bnplVault;
+    ITokenPriceOracle public priceOracle;
+
+    uint256 public mmPoolBps = INITIAL_MMPOOL_BPS;
+    uint256 public bnplVaultBps = INITIAL_VAULT_BPS;
+    uint256 public reconciledDelta;
+    uint256 public maxOracleAge;
+    uint256 public oraclePriceScale;
+    bool public oracleReturnsNowaPerNusc;
+
+    address[] private _signers;
+    mapping(address => bool) public isSigner;
+    uint256 public signerEpoch;
+    uint256 public nextProposalId = 1;
+
+    enum Action {
+        SetAllocations,
+        AddSigner,
+        RemoveSigner,
+        SetStatsContract,
+        SetReserveContract,
+        SetOracle,
+        SetMaxOracleAge,
+        SetOraclePriceConvention,
+        SetMMPool
     }
 
-    IERC20 public immutable stakingToken =
-        IERC20(0x5257bdd1F82de2b5906e83bdb87776DBA7DBDa97);
+    struct Proposal {
+        Action action;
+        address target;
+        uint256 value1;
+        uint256 value2;
+        uint64 createdAt;
+        uint64 expiresAt;
+        uint32 approvals;
+        uint256 epoch;
+        bool executed;
+        bool cancelled;
+    }
 
-    // mapping(address => bool) public mmPools;
-    // address[] public mmPoolList;
+    mapping(uint256 => Proposal) private _proposals;
+    mapping(uint256 => mapping(address => bool)) public hasApproved;
 
-    uint256 public totalStakeAmount;
-    uint256 public totalStakeClaimAmount;
-    uint256 public totalRewardClaim;
+    uint256 public totalOutstandingAllocation;
+    uint256 public outstandingMMpoolAllocation;
+    uint256 public outstandingVaultAllocation;
+    uint256 public cumulativeAllocatedMMpool;
+    uint256 public cumulativeAllocatedVault;
+    uint256 public cumulativeRecoveredMMpool;
+    uint256 public cumulativeRecoveredVault;
+    uint256 public accumulatedMMFeesNUSC;
 
-    uint256 public currentAPY; // dynamic, basis points
-    uint256 public minAPY = 300; // 3% minimum,
-    address public OperatorAddress = 0xBa2dF2424b6AC806C16Ebba254fc93b468102274;
-    uint256 public totalFeesReceived; // nUSDT fees track
-    uint256 public constant CLAIM_INTERVAL = 5 minutes;
-    uint256 public maxAPY = 3000; // 30 percent maxkaro
-    uint256 public minStakeAmount = 1 ether;
-    uint256 public lastAPYUpdateTime;
-    uint256 public constant APY_UPDATE_INTERVAL = 5 minutes; // 24 hours apy
-    uint256 public totalUniqueAddress;
-    address public ControllerBNPL;
-    uint256 public totalBorrowedOut;
-    uint256 public totalBorrowRepaid;
+    /// @notice BorrowFee NUSC collected but not yet dual-burned. Reserved from allocations.
+    uint256 public accumulatedBorrowFeesNUSC;
+    uint256 public burnedBorrowFeesNUSC;
+    uint256 public cumulativeNOWABurned;
 
-    mapping(address => UserInfo) public userInfo;
-
-    event Staked(address indexed user, uint256 amount);
-    event Claim(address indexed user, uint256 claimed);
-    event EmergencyWithdraw(address indexed user, uint256 amount);
-    event APYUpdated(uint256 newAPY);
-    event Withdraw(address indexed user, uint256 staked);
-    event ClaimStartTimeUpdated(uint256 timestamp);
-
-    event TokensTransferred(
-        address indexed token,
-        address indexed to,
-        uint256 amount
+    event DeltaCalculated(
+        uint256 eoaNUSC,
+        uint256 reserveNUSC,
+        uint256 halfMMpoolStake,
+        uint256 delta
     );
+    event Reconciled(
+        uint256 previousDelta,
+        uint256 currentDelta,
+        int256 changeAmount
+    );
+    event NUSCAllocated(address indexed destination, uint256 amount);
+    event NUSCRecovered(address indexed destination, uint256 amount);
+    event AllocationBpsChanged(uint256 mmPoolBps, uint256 bnplVaultBps);
+    event ProposalCreated(
+        uint256 indexed proposalId,
+        address indexed proposer,
+        Action action,
+        address target,
+        uint256 value1,
+        uint256 value2,
+        uint256 expiresAt
+    );
+    event ProposalApproved(
+        uint256 indexed proposalId,
+        address indexed signer,
+        uint256 approvals,
+        uint256 threshold
+    );
+    event ProposalExecuted(uint256 indexed proposalId, Action action);
+    event ProposalCancelled(uint256 indexed proposalId, address indexed signer);
+    event SignerAdded(address indexed signer);
+    event SignerRemoved(address indexed signer);
+    event StatsContractUpdated(
+        address indexed oldAddress,
+        address indexed newAddress
+    );
+    event ReserveContractUpdated(
+        address indexed oldAddress,
+        address indexed newAddress
+    );
+    event OracleUpdated(address indexed oldAddress, address indexed newAddress);
+    event OraclePolicyUpdated(
+        uint256 maxOracleAge,
+        uint256 priceScale,
+        bool nowaPerNusc
+    );
+    event BorrowFeeCollected(
+        address indexed vault,
+        uint256 amount,
+        uint256 accumulatedFees
+    );
+    event BorrowFeeBurned(
+        uint256 nuscAmount,
+        uint256 nowaAmount,
+        uint256 oraclePrice,
+        uint256 oracleUpdatedAt,
+        uint256 remainingFees
+    );
+    event NativeNOWAFunded(address indexed sender, uint256 amount);
+    event MMPoolUpdated(address indexed oldAddress, address indexed newAddress);
 
-    // event MMPoolAdded(address indexed pool);
-    // event MMPoolRemoved(address indexed pool);
+    modifier onlySigner() {
+        if (!isSigner[msg.sender]) revert NotSigner();
+        _;
+    }
 
+    /// @param _nusc NUSC ERC-20 contract.
+    /// @param _stats EOA statistics contract.
+    /// @param _reserve Address holding Reserve NUSC.
+    /// @param _mmPool MMpool contract.
+    /// @param _bnplVault BNPL Vault contract.
+    /// @param _oracle Price oracle returning getTokenPrice(address).
+    /// @param signers Four or five distinct initial signers.
+    /// @param _maxOracleAge Maximum accepted oracle-data age in seconds.
+    /// @param _priceScale Oracle quote precision; use 1e18 for the stated quote.
+    /// @param _oracleReturnsNowaPerNusc False for NUSC per NOWA.
     constructor(
-        uint256 _minStakeInWei,
-        address _initialOwner,
-        address _bnpl,
-        address _trustedForwarder // ← ADD
-    ) Ownable(_initialOwner) ERC2771Context(_trustedForwarder) {
-        // ← ADD
-        require(_trustedForwarder != address(0), "Invalid forwarder"); // ← ADD
-        require(_minStakeInWei > 0, "Should be greater than zero");
-        minStakeAmount = _minStakeInWei;
-        lastAPYUpdateTime = block.timestamp;
-        currentAPY = minAPY;
-        ControllerBNPL = _bnpl;
-    }
-
-    modifier onlyControllerBNPL() {
-        require(msg.sender == ControllerBNPL, "Not controller");
-        _;
-    }
-
-    modifier onlyApyOperator() {
-        require(
-            msg.sender == OperatorAddress || msg.sender == owner(),
-            "Not authorized"
-        );
-        _;
-    }
-
-    function _isContract(address _addr) internal view returns (bool) {
-        return _addr.code.length > 0;
-    }
-
-    function _recalculateAPY() internal {
-        if (totalStakeAmount == 0) return;
-        if (block.timestamp < lastAPYUpdateTime + APY_UPDATE_INTERVAL) return;
-
-        uint256 newAPY = ((totalBorrowRepaid +totalFeesReceived) * 10000) / totalStakeAmount;
-
-        if (newAPY > maxAPY) {
-            newAPY = maxAPY;
-        } else if (newAPY < minAPY) {
-            newAPY = minAPY;
+        address _nusc,
+        address _stats,
+        address _reserve,
+        address _mmPool,
+        address _bnplVault,
+        address _oracle,
+        address[] memory signers,
+        uint256 _maxOracleAge,
+        uint256 _priceScale,
+        bool _oracleReturnsNowaPerNusc
+    ) Ownable(msg.sender) {
+        if (
+            _nusc == address(0) ||
+            _stats == address(0) ||
+            _reserve == address(0) ||
+            _mmPool == address(0) ||
+            _bnplVault == address(0) ||
+            _oracle == address(0)
+        ) {
+            revert ZeroAddress();
+        }
+        if (
+            _nusc.code.length == 0 ||
+            _stats.code.length == 0 ||
+            _mmPool.code.length == 0 ||
+            _bnplVault.code.length == 0 ||
+            _oracle.code.length == 0
+        ) {
+            revert InvalidConfiguration();
+        }
+        if (
+            signers.length < MIN_SIGNERS ||
+            signers.length > MAX_SIGNERS ||
+            _maxOracleAge == 0 ||
+            _priceScale == 0
+        ) {
+            revert InvalidConfiguration();
         }
 
-        currentAPY = newAPY;
-        lastAPYUpdateTime = block.timestamp;
-        emit APYUpdated(currentAPY);
+        nuscToken = IERC20(_nusc);
+        statsContract = IEOAStats(_stats);
+        reserveContract = _reserve;
+        mmPool = IMMpool(_mmPool);
+        bnplVault = _bnplVault;
+        priceOracle = ITokenPriceOracle(_oracle);
+        maxOracleAge = _maxOracleAge;
+        oraclePriceScale = _priceScale;
+        oracleReturnsNowaPerNusc = _oracleReturnsNowaPerNusc;
+
+        for (uint256 i; i < signers.length; ++i) {
+            address signer = signers[i];
+            if (signer == address(0) || isSigner[signer])
+                revert InvalidSignerSet();
+            isSigner[signer] = true;
+            _signers.push(signer);
+            emit SignerAdded(signer);
+        }
     }
 
-    // ----------------- Admin Functions -----------------
-
-    function setPaused(bool _setPaused) public onlyOwner {
-        return (_setPaused) ? _pause() : _unpause();
+    receive() external payable {
+        emit NativeNOWAFunded(msg.sender, msg.value);
     }
 
-    function setControllerBNPL(address _bnplContract) external onlyOwner {
-        require(_bnplContract != address(0), "Invalid address");
-
-        ControllerBNPL = _bnplContract;
+    function threshold() public view returns (uint256) {
+        return (_signers.length * 2 + 2) / 3;
     }
 
-    function setMaxAPY(uint256 _maxAPY) external onlyOwner {
-        require(_maxAPY > 0 && _maxAPY <= 10000, "Invalid APY"); // max 100%
-        require(_maxAPY > minAPY, "maxAPY must be > minAPY");
-        maxAPY = _maxAPY;
-        emit APYUpdated(_maxAPY);
+    function getSigners() external view returns (address[] memory) {
+        return _signers;
     }
 
-    function setMinAPY(uint256 _minAPY) external onlyOwner {
-        require(_minAPY > 0, "Must be > 0");
-        require(_minAPY < maxAPY, "minAPY must be < maxAPY");
-        minAPY = _minAPY;
-        emit APYUpdated(_minAPY);
+    /// @dev Checked multiplication followed by division. Unlike full-precision mulDiv,
+    /// this intentionally reverts if the intermediate product exceeds uint256.
+    function _checkedMulDiv(
+        uint256 a,
+        uint256 b,
+        uint256 denominator
+    ) internal pure returns (uint256) {
+        if (denominator == 0) revert InvalidConfiguration();
+        if (b != 0 && a > type(uint256).max / b) revert ArithmeticOverflow();
+        return (a * b) / denominator;
     }
 
-    function setOperator(address _updater) external onlyOwner {
-        require(_updater != address(0), "Invalid address");
-        OperatorAddress = _updater;
+    function _calculateDelta()
+        internal
+        view
+        returns (
+            uint256 delta,
+            uint256 eoaNUSC,
+            uint256 reserveNUSC,
+            uint256 halfStake
+        )
+    {
+        (, eoaNUSC) = statsContract.getEOAStats();
+        reserveNUSC = nuscToken.balanceOf(reserveContract);
+        halfStake = mmPool.totalUserStake() / 2;
+        delta = eoaNUSC + reserveNUSC + halfStake;
     }
-    function setMinStakeAmount(uint256 _minStakeAmount) external onlyOwner {
-    require(_minStakeAmount > 0, "Must be > 0");
-    minStakeAmount = _minStakeAmount;
+
+    function calculateDelta() external view returns (uint256 delta) {
+        (delta, , , ) = _calculateDelta();
     }
 
-    // ----------------- Staking Logic -----------------
+    function reportDelta() external returns (uint256 delta) {
+        uint256 eoaNUSC;
+        uint256 reserveNUSC;
+        uint256 halfStake;
+        (delta, eoaNUSC, reserveNUSC, halfStake) = _calculateDelta();
+        emit DeltaCalculated(eoaNUSC, reserveNUSC, halfStake, delta);
+    }
 
-    function _updateReward(address _user) internal {
-        UserInfo storage user = userInfo[_user];
+    /// @notice Permissionlessly reconcile allocations to the current funding target.
+    function syncAndReconcile() external nonReentrant {
+        (
+            uint256 currentDelta,
+            uint256 eoaNUSC,
+            uint256 reserveNUSC,
+            uint256 halfStake
+        ) = _calculateDelta();
+        emit DeltaCalculated(eoaNUSC, reserveNUSC, halfStake, currentDelta);
 
-        if (user.amount > 0) {
-            uint256 timeElapsed = block.timestamp - user.lastUpdateTime;
+        uint256 previousDelta = reconciledDelta;
+        uint256 outstanding = totalOutstandingAllocation;
 
-            uint256 reward = calculateReward(user.amount, timeElapsed);
-            user.rewardStored += reward;
-            user.totalRewardEarned += reward; // ✅ ADD THIS
+        if (
+            outstanding !=
+                outstandingMMpoolAllocation + outstandingVaultAllocation ||
+            outstanding != previousDelta
+        ) revert InvalidConfiguration();
+
+        if (currentDelta > outstanding) {
+            _allocateIncrease(currentDelta - outstanding);
+        } else if (currentDelta < outstanding) {
+            _recoverDecrease(outstanding - currentDelta);
         }
 
-        user.lastUpdateTime = block.timestamp;
+        reconciledDelta = currentDelta;
+        uint256 difference = currentDelta >= previousDelta
+            ? currentDelta - previousDelta
+            : previousDelta - currentDelta;
+        if (difference > uint256(type(int256).max))
+            revert DeltaChangeTooLarge();
+        int256 signedChange = currentDelta >= previousDelta
+            ? int256(difference)
+            : -int256(difference);
+        emit Reconciled(previousDelta, currentDelta, signedChange);
     }
 
-    function stake(uint256 _amount) external nonReentrant whenNotPaused {
-        require(_amount > 0 && _amount >= minStakeAmount, "Below min stake");
+    function _allocateIncrease(uint256 increase) internal {
+        uint256 mmAmount = _checkedMulDiv(increase, mmPoolBps, BPS_DENOMINATOR);
+        uint256 vaultAmount = increase - mmAmount;
 
-        address sender = _msgSender(); // ← ADD THIS LINE
-        UserInfo storage user = userInfo[sender]; // ← changed
+        uint256 tokenBalance = nuscToken.balanceOf(address(this));
+        uint256 reservedFees = accumulatedBorrowFeesNUSC;
+        if (tokenBalance < reservedFees)
+            revert FeeReserveInvariant(tokenBalance, reservedFees);
 
-        if (user.lastUpdateTime == 0) {
-            totalUniqueAddress += 1;
+        uint256 available = tokenBalance - reservedFees;
+        if (available < increase)
+            revert InsufficientPOCLBalance(increase, available);
+
+        totalOutstandingAllocation += increase;
+        outstandingMMpoolAllocation += mmAmount;
+        outstandingVaultAllocation += vaultAmount;
+        cumulativeAllocatedMMpool += mmAmount;
+        cumulativeAllocatedVault += vaultAmount;
+
+        if (mmAmount != 0) {
+            nuscToken.safeTransfer(address(mmPool), mmAmount);
+            // Notify MMpool after receiving NUSC.
+            mmPool.notifyNUSCStaked(mmAmount);
+            emit NUSCAllocated(address(mmPool), mmAmount);
         }
+        if (vaultAmount != 0) {
+            nuscToken.safeTransfer(bnplVault, vaultAmount);
 
-        _updateReward(sender); // ← changed
-
-        stakingToken.safeTransferFrom(sender, address(this), _amount); // ← changed
-        totalStakeAmount += _amount;
-
-        user.amount += _amount;
-
-        emit Staked(sender, _amount); // ← changed
+            // Notify BNPL Vault after receiving NUSC.
+            IPOCLDestination(bnplVault).notifyNUSCStaked(vaultAmount);
+            emit NUSCAllocated(bnplVault, vaultAmount);
+        }
     }
 
-    function updateAPY() external onlyApyOperator {
-        require(
-            block.timestamp >= lastAPYUpdateTime + APY_UPDATE_INTERVAL,
-            "Too early to update APY"
-        );
-        require(totalStakeAmount > 0, "No stake yet");
+    function _recoverDecrease(uint256 decrease) internal {
+        uint256 outstanding = totalOutstandingAllocation;
+        uint256 mmTake;
+        uint256 vaultTake;
 
-        _recalculateAPY();
-    }
-
-    function unStake(uint256 _amount) external nonReentrant {
-        address sender = _msgSender();
-        UserInfo storage user = userInfo[sender];
-        require(_amount > 0, "Invalid amount");
-
-        _updateReward(sender);
-
-        uint256 principalAmount = user.amount;
-        uint256 pendingRewards = user.rewardStored;
-        uint256 totalAvailable = principalAmount + pendingRewards;
-
-        require(principalAmount > 0, "Nothing staked");
-        require(totalAvailable >= _amount, "Insufficient balance");
-
-        // CASE 1: Full unstake
-        if (_amount == totalAvailable) {
-            user.amount = 0;
-            user.rewardStored = 0;
-            user.rewardClaimed += pendingRewards;
-            user.amountclaimed += principalAmount;
-            user.lastClaimTime = block.timestamp;
-
-            totalStakeAmount -= principalAmount;
-            totalStakeClaimAmount += principalAmount;
-            totalRewardClaim += pendingRewards;
-
-            require(
-                stakingToken.balanceOf(address(this)) >= _amount,
-                "Insufficient balance"
+        if (decrease == outstanding) {
+            mmTake = outstandingMMpoolAllocation;
+            vaultTake = outstandingVaultAllocation;
+        } else {
+            mmTake = _checkedMulDiv(
+                decrease,
+                outstandingMMpoolAllocation,
+                outstanding
             );
-
-            stakingToken.safeTransfer(sender, _amount);
-            emit Withdraw(sender, principalAmount);
-            emit Claim(sender, pendingRewards);
-            return;
-        }
-
-        // CASE 2 & 3: Partial unstake
-        uint256 remainingUnstake = _amount;
-
-        if (pendingRewards > 0) {
-            // CASE 2: reward >= _amount, sirf reward se cover
-            if (pendingRewards >= _amount) {
-                uint256 leftoverReward = pendingRewards - _amount;
-
-                user.rewardStored = leftoverReward; // ✅ leftover reward mein rakho
-                user.rewardClaimed += _amount;
-                user.lastClaimTime = block.timestamp;
-                // principal touch nahi hua ✅
-
-                require(
-                    stakingToken.balanceOf(address(this)) >= _amount,
-                    "Insufficient balance for reward"
-                );
-
-                stakingToken.safeTransfer(sender, _amount);
-                totalRewardClaim += _amount;
-                emit Claim(sender, _amount);
-
-                remainingUnstake = 0;
-
-                // CASE 3: reward < _amount, pehle reward phir principal
-            } else if (pendingRewards < _amount) {
-                uint256 fromPrincipal = _amount - pendingRewards;
-
-                user.rewardStored = 0;
-                user.rewardClaimed += pendingRewards;
-                user.lastClaimTime = block.timestamp;
-
-                require(
-                    stakingToken.balanceOf(address(this)) >= pendingRewards,
-                    "Insufficient balance for reward"
-                );
-
-                stakingToken.safeTransfer(sender, pendingRewards);
-                totalRewardClaim += pendingRewards;
-                emit Claim(sender, pendingRewards);
-
-                remainingUnstake = fromPrincipal;
+            vaultTake = decrease - mmTake;
+            if (
+                mmTake > outstandingMMpoolAllocation ||
+                vaultTake > outstandingVaultAllocation
+            ) {
+                revert InvalidConfiguration();
             }
         }
 
-        if (remainingUnstake > 0) {
-            require(
-                user.amount >= remainingUnstake,
-                "Insufficient staked balance"
-            );
+        totalOutstandingAllocation -= decrease;
+        outstandingMMpoolAllocation -= mmTake;
+        outstandingVaultAllocation -= vaultTake;
+        cumulativeRecoveredMMpool += mmTake;
+        cumulativeRecoveredVault += vaultTake;
 
-            user.amount -= remainingUnstake;
-            user.amountclaimed += remainingUnstake;
-            totalStakeAmount -= remainingUnstake;
-
-            require(
-                stakingToken.balanceOf(address(this)) >= remainingUnstake,
-                "Insufficient balance for unstake"
-            );
-
-            stakingToken.safeTransfer(sender, remainingUnstake);
-            totalStakeClaimAmount += remainingUnstake;
+        if (mmTake != 0) {
+            mmPool.withdrawNUSCForPOCL(mmTake, address(this));
+            emit NUSCRecovered(address(mmPool), mmTake);
         }
-
-        emit Withdraw(sender, _amount);
+        if (vaultTake != 0) {
+            IPOCLDestination(bnplVault).withdrawNUSCForPOCL(vaultTake);
+            emit NUSCRecovered(bnplVault, vaultTake);
+        }
     }
 
-    function stakeWithPermit(
-        uint256 _amount,
-        uint256 deadline,
-        uint8 v,
-        bytes32 r,
-        bytes32 s
-    ) external nonReentrant whenNotPaused {
-        address sender = _msgSender();
+    function propose(
+        Action action,
+        address target,
+        uint256 value1,
+        uint256 value2
+    ) external onlySigner returns (uint256 id) {
+        if (action == Action.RemoveSigner && target == msg.sender)
+            revert InvalidProposal();
+        _validateProposal(action, target, value1, value2);
 
-        // Permit direct call — ecrecover se sender verify hoga
-        IERC20Permit(address(stakingToken)).permit(
-            sender,
-            address(this),
-            _amount,
-            deadline,
-            v,
-            r,
-            s
+        id = nextProposalId++;
+        uint64 expiry = uint64(block.timestamp + PROPOSAL_LIFETIME);
+        Proposal storage p = _proposals[id];
+        p.action = action;
+        p.target = target;
+        p.value1 = value1;
+        p.value2 = value2;
+        p.createdAt = uint64(block.timestamp);
+        p.expiresAt = expiry;
+        p.epoch = signerEpoch;
+        p.approvals = 1;
+        hasApproved[id][msg.sender] = true;
+
+        emit ProposalCreated(
+            id,
+            msg.sender,
+            action,
+            target,
+            value1,
+            value2,
+            expiry
         );
-
-        // Fir stake
-        UserInfo storage user = userInfo[sender];
-        if (user.lastUpdateTime == 0) totalUniqueAddress += 1;
-        _updateReward(sender);
-        stakingToken.safeTransferFrom(sender, address(this), _amount);
-        totalStakeAmount += _amount;
-        user.amount += _amount;
-        emit Staked(sender, _amount);
+        emit ProposalApproved(id, msg.sender, 1, threshold());
     }
 
-    function pendingReward(address _user) external view returns (uint256) {
-        UserInfo memory user = userInfo[_user];
+    function approveProposal(uint256 id) external onlySigner {
+        Proposal storage p = _proposals[id];
+        if (
+            p.createdAt == 0 ||
+            p.cancelled ||
+            p.executed ||
+            p.epoch != signerEpoch
+        ) revert InvalidProposal();
+        if (block.timestamp > p.expiresAt) revert ProposalExpired();
+        if (p.action == Action.RemoveSigner && msg.sender == p.target)
+            revert InvalidProposal();
+        if (hasApproved[id][msg.sender]) revert AlreadyApproved();
 
-        if (user.amount == 0) {
-            return 0;
+        hasApproved[id][msg.sender] = true;
+        ++p.approvals;
+        emit ProposalApproved(id, msg.sender, p.approvals, threshold());
+    }
+
+    function executeProposal(uint256 id) external nonReentrant {
+        Proposal storage p = _proposals[id];
+        if (p.createdAt == 0 || p.cancelled || p.epoch != signerEpoch)
+            revert InvalidProposal();
+        if (p.executed) revert ProposalAlreadyExecuted();
+        if (block.timestamp > p.expiresAt) revert ProposalExpired();
+        if (p.approvals < threshold()) revert ThresholdNotMet();
+
+        p.executed = true;
+        Action action = p.action;
+
+        if (action == Action.SetAllocations) {
+            mmPoolBps = p.value1;
+            bnplVaultBps = p.value2;
+            emit AllocationBpsChanged(p.value1, p.value2);
+        } else if (action == Action.AddSigner) {
+            _addSigner(p.target);
+        } else if (action == Action.RemoveSigner) {
+            _removeSigner(p.target);
+        } else if (action == Action.SetStatsContract) {
+            address oldAddress = address(statsContract);
+            statsContract = IEOAStats(p.target);
+            emit StatsContractUpdated(oldAddress, p.target);
+        } else if (action == Action.SetReserveContract) {
+            address oldAddress = reserveContract;
+            reserveContract = p.target;
+            emit ReserveContractUpdated(oldAddress, p.target);
+        } else if (action == Action.SetOracle) {
+            address oldAddress = address(priceOracle);
+            priceOracle = ITokenPriceOracle(p.target);
+            emit OracleUpdated(oldAddress, p.target);
+        } else if (action == Action.SetMaxOracleAge) {
+            maxOracleAge = p.value1;
+            emit OraclePolicyUpdated(
+                maxOracleAge,
+                oraclePriceScale,
+                oracleReturnsNowaPerNusc
+            );
+        } else if (action == Action.SetOraclePriceConvention) {
+            oraclePriceScale = p.value1;
+            oracleReturnsNowaPerNusc = p.value2 == 1;
+            emit OraclePolicyUpdated(
+                maxOracleAge,
+                oraclePriceScale,
+                oracleReturnsNowaPerNusc
+            );
+        } else if (action == Action.SetMMPool) {
+            address oldAddress = address(mmPool);
+            mmPool = IMMpool(p.target);
+
+            emit MMPoolUpdated(oldAddress, p.target);
+        } else {
+            revert InvalidProposal();
         }
 
-        uint256 timeElapsed = block.timestamp - user.lastUpdateTime;
-
-        uint256 newReward = calculateReward(user.amount, timeElapsed);
-        uint256 totalReward = user.rewardStored + newReward;
-
-        return totalReward;
+        emit ProposalExecuted(id, action);
     }
 
-    function calculateReward(
-        uint256 _amount,
-        uint256 _time
-    ) public view returns (uint256) {
-        return (_amount * currentAPY * _time) / (365 days * 10000);
+    function cancelProposal(uint256 id) external onlySigner {
+        Proposal storage p = _proposals[id];
+        if (
+            p.createdAt == 0 ||
+            p.executed ||
+            p.cancelled ||
+            p.epoch != signerEpoch
+        ) revert InvalidProposal();
+        p.cancelled = true;
+        emit ProposalCancelled(id, msg.sender);
     }
 
-    function getdailyrewardclaim(
-        address _user
-    ) external view returns (uint256) {
-        UserInfo memory user = userInfo[_user];
+    function _validateProposal(
+        Action action,
+        address target,
+        uint256 value1,
+        uint256 value2
+    ) internal view {
+        if (action == Action.SetAllocations) {
+            if (
+                value1 == 0 ||
+                value2 == 0 ||
+                value1 > BPS_DENOMINATOR ||
+                value2 > BPS_DENOMINATOR ||
+                value1 + value2 != BPS_DENOMINATOR
+            ) {
+                revert InvalidConfiguration();
+            }
+        } else if (action == Action.AddSigner) {
+            if (
+                target == address(0) ||
+                isSigner[target] ||
+                _signers.length >= MAX_SIGNERS
+            ) revert InvalidSignerSet();
+        } else if (action == Action.RemoveSigner) {
+            if (!isSigner[target] || _signers.length <= MIN_SIGNERS)
+                revert InvalidSignerSet();
+        } else if (
+            action == Action.SetStatsContract || action == Action.SetOracle
+        ) {
+            if (target == address(0) || target.code.length == 0)
+                revert InvalidConfiguration();
+        } else if (action == Action.SetReserveContract) {
+            if (target == address(0)) revert ZeroAddress();
+        } else if (action == Action.SetMaxOracleAge) {
+            if (value1 == 0) revert InvalidConfiguration();
+        } else if (action == Action.SetOraclePriceConvention) {
+            if (value1 == 0 || value2 > 1) revert InvalidPriceScale();
+        } else if (action == Action.SetMMPool) {
+            if (target == address(0) || target.code.length == 0) {
+                revert InvalidConfiguration();
+            }
+        }
+    }
 
-        if (user.amount == 0) {
-            return 0;
+    function _addSigner(address signer) internal {
+        if (
+            signer == address(0) ||
+            isSigner[signer] ||
+            _signers.length >= MAX_SIGNERS
+        ) revert InvalidSignerSet();
+        isSigner[signer] = true;
+        _signers.push(signer);
+        ++signerEpoch;
+        emit SignerAdded(signer);
+    }
+
+    function _removeSigner(address signer) internal {
+        if (!isSigner[signer] || _signers.length <= MIN_SIGNERS)
+            revert InvalidSignerSet();
+        isSigner[signer] = false;
+
+        for (uint256 i; i < _signers.length; ++i) {
+            if (_signers[i] == signer) {
+                _signers[i] = _signers[_signers.length - 1];
+                _signers.pop();
+                break;
+            }
         }
 
-        // 5 minutes = 300 seconds (testing ke liye)
-        // 24 hours  = 86400 seconds (production ke liye)
-        return calculateReward(user.amount, 300);
+        ++signerEpoch;
+        emit SignerRemoved(signer);
     }
 
-    function currentBorrowed() public view returns (uint256) {
-        return totalBorrowedOut - totalBorrowRepaid;
+    /// @notice Pull BorrowFee NUSC from the configured Vault and record it once.
+    /// @dev Vault must approve this contract for amount before calling.
+    function collectBorrowFee(uint256 amount) external nonReentrant {
+        if (msg.sender != bnplVault) revert OnlyVault();
+        if (amount == 0) revert InvalidConfiguration();
+
+        nuscToken.safeTransferFrom(msg.sender, address(this), amount);
+
+        accumulatedBorrowFeesNUSC += amount;
+        emit BorrowFeeCollected(msg.sender, amount, accumulatedBorrowFeesNUSC);
     }
 
-    function emergencyWithdraw(
-    address token,
-    uint256 amount
-    ) external onlyOwner {
-    require(amount > 0, "Invalid amount");
-    IERC20(token).safeTransfer(owner(), amount);
-    emit TokensTransferred(token, owner(), amount);
+    function collectMmFee(uint256 amount) external nonReentrant {
+        if (msg.sender != address(mmPool)) revert OnlyMMPool();
+        if (amount == 0) revert InvalidConfiguration();
+
+        nuscToken.safeTransferFrom(msg.sender, address(this), amount);
+
+        accumulatedMMFeesNUSC += amount;
+        emit BorrowFeeCollected(msg.sender, amount, accumulatedBorrowFeesNUSC);
     }
 
-    // --------------------- MM Pool Add ----------------------
+    /// @notice Burn all pending BorrowFee NUSC and equivalent native NOWA.
+    ///      Native NOWA must be funded separately; no swap is performed.
+    function burnNOWAForCollectedFees() external nonReentrant {
+        uint256 fees = accumulatedBorrowFeesNUSC;
+        if (fees == 0) revert NoBorrowFees();
 
-    // function addMMPools(address[] calldata _pools) external onlyOwner {
-    //     uint256 length = _pools.length;
-    //     require(length > 0, "Empty array");
-
-    //   for (uint256 i = 0; i < length; i++) {
-    //     address pool = _pools[i];
-
-    //     require(pool != address(0), "Invalid address");
-    //     require(_isContract(pool), "Not a contract");
-    //     require(!mmPools[pool], "Already added");
-
-    //     mmPools[pool] = true;
-    //     mmPoolList.push(pool);
-
-    //     emit MMPoolAdded(pool);
-    //   }
-    // }
-
-    // function removeMMPools(address[] calldata _pools) external onlyOwner {
-    //     uint256 length = _pools.length;
-    //     require(length > 0, "Empty array");
-
-    //  for (uint256 i = 0; i < length; i++) {
-    //     address pool = _pools[i];
-
-    //     require(mmPools[pool], "Not exists");
-
-    //     mmPools[pool] = false;
-
-    //     // remove from array (swap & pop)
-    //     uint256 listLength = mmPoolList.length;
-    //     for (uint256 j = 0; j < listLength; j++) {
-    //         if (mmPoolList[j] == pool) {
-    //             mmPoolList[j] = mmPoolList[listLength - 1];
-    //             mmPoolList.pop();
-    //             break;
-    //         }
-    //     }
-
-    //     emit MMPoolRemoved(pool);
-    //   }
-    // }
-
-    // function getAllMMPools() external view returns (address[] memory) {
-    //    return mmPoolList;
-    // }
-
-    // =====================. Fund TRansfer ===========================
-
-    // function requestFunds(address token, uint256 amount) external nonReentrant {
-    //     // require(mmPools[msg.sender], "Not authorized MM pool");
-    //     require(
-    //         IFactory(mmVaultFactory).isVault(msg.sender),
-    //         "Not valid vault"
-    //     );
-    //     require(token == address(stakingToken), "Invalid token");
-    //     require(amount > 0, "Invalid amount");
-
-    //     uint256 balance = IERC20(token).balanceOf(address(this));
-    //     require(balance >= amount, "Insufficient liquidity");
-
-    //     // Transfer directly to MM Pool (msg.sender)
-    //     IERC20(token).safeTransfer(msg.sender, amount);
-
-    //     emit TokensTransferred(token, msg.sender, amount);
-    // }
-
-    function transferToken(
-        address token,
-        address to,
-        uint256 amount
-    ) external onlyControllerBNPL {
-        require(to != address(0), "Invalid recipient");
-        require(
-            IERC20(token).balanceOf(address(this)) >= amount,
-            " Insufficient token balance in Staking Contract "
+        (uint256 price, uint256 updatedAt) = priceOracle.getTokenPrice(
+            NOWA_NATIVE
         );
+        if (price == 0) revert InvalidOraclePrice();
+        if (updatedAt == 0 || updatedAt > block.timestamp)
+            revert InvalidOracleTimestamp();
+        if (block.timestamp - updatedAt > maxOracleAge)
+            revert StaleOraclePrice();
 
-        IERC20(token).safeTransfer(to, amount);
-        totalBorrowedOut += amount;
+        uint256 nowaAmount;
+        if (oracleReturnsNowaPerNusc) {
+            nowaAmount = _checkedMulDiv(fees, price, oraclePriceScale);
+        } else {
+            nowaAmount = _checkedMulDiv(fees, oraclePriceScale, price);
+        }
+        if (nowaAmount == 0) revert InvalidOraclePrice();
 
-        emit TokensTransferred(token, to, amount);
+        uint256 nativeBalance = address(this).balance;
+        if (nativeBalance < nowaAmount)
+            revert InsufficientNativeNOWA(nowaAmount, nativeBalance);
+
+        uint256 tokenBalance = nuscToken.balanceOf(address(this));
+        if (tokenBalance < fees) revert FeeReserveInvariant(tokenBalance, fees);
+
+        // Effects first. Any failed transfer reverts all state changes atomically.
+        accumulatedBorrowFeesNUSC = 0;
+        burnedBorrowFeesNUSC += fees;
+        cumulativeNOWABurned += nowaAmount;
+
+        nuscToken.safeTransfer(BURN_ADDRESS, fees);
+
+        (bool success, ) = payable(BURN_ADDRESS).call{value: nowaAmount}("");
+        if (!success) revert NativeTransferFailed();
+
+        emit BorrowFeeBurned(
+            fees,
+            nowaAmount,
+            price,
+            updatedAt,
+            accumulatedBorrowFeesNUSC
+        );
     }
 
-    function receiveFees(uint256 amount) external onlyControllerBNPL {
-        // only authorized contract
-        stakingToken.safeTransferFrom(ControllerBNPL, address(this), amount);
-        totalFeesReceived += amount;
-    }
-
-    function receivePrincipal(uint256 amount) external onlyControllerBNPL {
-        totalBorrowRepaid += amount;
-    }
-
-    function _msgSender()
-        internal
+    function getProposal(
+        uint256 id
+    )
+        external
         view
-        override(Context, ERC2771Context)
-        returns (address)
+        returns (
+            Action action,
+            address target,
+            uint256 value1,
+            uint256 value2,
+            uint64 createdAt,
+            uint64 expiresAt,
+            uint32 approvals,
+            uint256 epoch,
+            bool executed,
+            bool cancelled
+        )
     {
-        return ERC2771Context._msgSender();
-    }
-
-    function _msgData()
-        internal
-        view
-        override(Context, ERC2771Context)
-        returns (bytes calldata)
-    {
-        return ERC2771Context._msgData();
-    }
-
-    function _contextSuffixLength()
-        internal
-        view
-        override(Context, ERC2771Context)
-        returns (uint256)
-    {
-        return ERC2771Context._contextSuffixLength();
+        Proposal storage p = _proposals[id];
+        return (
+            p.action,
+            p.target,
+            p.value1,
+            p.value2,
+            p.createdAt,
+            p.expiresAt,
+            p.approvals,
+            p.epoch,
+            p.executed,
+            p.cancelled
+        );
     }
 }
